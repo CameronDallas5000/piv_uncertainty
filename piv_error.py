@@ -26,7 +26,43 @@ def recursiveGaussSmooth(data, L):
 	Outputs:
 		filter: 2d array
 			smoothed array multiplied by square of the filter length
+
+	General idea: The filtering acts as a fast way to do a weighted sum of the values
+	in each interrogation window. The output should produce values of the Cs and S at
+	each vector point in the image.
 	"""
+
+	#define filter radius
+	sig = L
+	n,m = data.shape
+
+	#get q value
+	if sig >= 0.5 and sig <2.5:
+		q = 3.97156 - 4.14554*np.sqrt(1 - 0.26891*sig)
+	if sig >= 2.5:
+		q = 0.98711*sig - 0.96330
+	else:
+		raise ValueError('Filter radius too small')
+
+
+	#get filter coefficients
+	b0 = 1.57825 + 2.44413*q + 1.4281*(q**2) + 0.422205*(q**3)
+	b1 = 2.44413*q + 2.85619*(q**2) + 1.26661*(q**3)
+	b2 = -1.4281*(q**2) - 1.26661*(q**3)
+	b3 = 0.422205*(q**3)
+	B = 1 - (b1 + b2 + b3)/b0
+
+	#define filter
+	def filter(x):
+		#x is the signal to be filtered
+		y = np.array(x.shape)
+		y[0] = B*x[0]
+		y[1] = B*x[1] + (b1*y[0]) / b0
+		y[2] = B*x[2] + (b1*y[1] + b2*y[0]) / b0
+		y[3] = B*x[3] + (b1*y[2] + b2*y[1] + b3*y[0]) / b0
+
+		for i in range(4, len(x)):
+			y[i] = B*x[i] + (b1*y[i-1] + b2*y[i-2] + b3*y[i-3]) / b0
 
 	
 
