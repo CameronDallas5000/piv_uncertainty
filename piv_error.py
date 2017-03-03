@@ -11,11 +11,12 @@ Turbulence Research Laboratory
 
 import numpy as np
 import scipy.ndimage.filters as filt
+import scipy.interpolate as interp
 
 
 
 
-def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_factor = None, dx = 1, dy = 1):
+def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_factor = 1., dx = 1, dy = 1):
 
 	"""
 	Uses the Correlation Statistics method to approximate the error in the velocity
@@ -27,28 +28,27 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 			first full frame
 		frame_b: 2d array
 			second full frame 
-		x: 2d array 
+		x: 2d array , float
 			x location of velocity vectors
-		y: 2d array
+		y: 2d array, float
 			location of velocity vectors
-		u: 2d array 
+		u: 2d array , float
 			x velocity
-		v: 2d array 
+		v: 2d array , float
 			y velocity
 		dt: float  
 			time step between windows
 		L: int
 			Interrogation window size
-		overlap: 
+		overlap: int
 			number of pixels that adjacent windows overlap
-		scaling factor: int 
+		scaling factor: float
 			image scaling factor in pixels per meter. By default this assumes that all inputs for 
 			velocity and location are in units of pixels and pixels per second
 		dx: int
 			pixels displacement for the delta x value (typically should be 1)
 		dy: int
 			pixel displacement for the delta y value (typically should be 1)
-
 		  
 	Outputs:
 		Ux: 2d array
@@ -69,111 +69,111 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 	frame_a = frame_a.astype(float)
 	frame_b = frame_b.astype(float)
 
-	#get field shape
-	n_rows, n_cols = frame_a.shape
+	#scale piv data
+	x = x*scaling_factor
+	y = y*scaling_factor
+	u = u*scaling_factor
+	v = v*scaling_factor
 
-	#Calculate displacement field and vector locations.
-	#Must all be integer values because they represent pixel locations
-	if scaling_factor:
-		u_row_temp = np.round(-v*dt*scaling_factor).astype('int32')
-		u_col_temp = np.round(u*dt*scaling_factor).astype('int32')
+	row_pix = y[::-1].astype('int32')
+	col_pix = x.astype('int32')
 
-		row_pix = np.round(y*scaling_factor).astype('uint32')
-		col_pix = np.round(x*scaling_factor).astype('uint32')
-	else:
-		u_row_temp = np.round(-v*dt).astype('int32') 	
-		u_col_temp = np.round(u*dt).astype('int32') 	
-
-		row_pix = np.round(y).astype('uint32')
-		col_pix = np.round(x).astype('uint32')
-
-
-	#expand displacement field to full image
-	u_row = np.zeros(frame_a.shape, dtype = np.int32)   #row shift at each pixel location
-	u_col = np.zeros(frame_a.shape, dtype = np.int32)	#column shift at each pixel location
-
-	for i in range(v.shape[0]):
-		for j in range(v.shape[1]):
-			u_row[overlap/2 + i*overlap: overlap/2 + (i+1)*overlap, overlap/2 + j*overlap: overlap/2 + (j+1)*overlap] = u_row_temp[i,j]
-			u_col[overlap/2 + i*overlap: overlap/2 + (i+1)*overlap, overlap/2 + j*overlap: overlap/2 + (j+1)*overlap] = u_col_temp[i,j]
-
-
-	#shift frame_b to match frame a
-	frame_b_shift = np.zeros(frame_b.shape)
-	for i in range(overlap/2, (n_rows - overlap/2)):
-		for j in range(overlap/2, n_cols - overlap/2):
-			frame_b_shift[i,j] = frame_b[i- u_row[i,j], j - u_col[i,j]]
-
+	#Dewarp frame_b
+	frame_b_shift = image_dewarp(frame_b, x,y,u,v)
 
 	"""
 	-----------------  x uncertainty -----------------------
+
+	Get C and Sxy values for each pixel then filter and smooth them, which is
+	equivalent to doing the sms over the interrogation window.
 	"""
 
-	#calculate C(u), C+, C-, and S_xy field for x
-	c_u = np.multiply(frame_a, frame_b_shift)  #this value is the same for both x and y uncertainty
-	S_x = np.zeros(frame_a.shape)
+
+	#calculate C(u)
+	C_u = np.multiply(frame_a, frame_b_shift)  #this value is the same for both x and y uncertainty
+	
+	#get delta C_xy for x direction
 	dC_x = np.zeros(frame_a.shape)  #delta C_i in x direction
-	dC_x[0:-dx, 0:-dx] = frame_a[0:-dx,0:-dx]*frame_b_shift[0:-dx, dx:] - frame_a[0:-dx, dx:]*frame_b_shift[0:-dx, 0:-dx]
+	cPlus_x = np.zeros(frame_a.shape)
+	cPlus_x[:, 0:-dx] = frame_a[:, 0:-dx]*frame_b_shift[:, dx:]
+	cMinus_x = np.zeros(frame_a.shape)
+	cMinus_x[:, 0:-dx] = frame_a[:, dx:]*frame_b_shift[:, 0:-dx]
+	dC_x = cPlus_x - cMinus_x
 	dC_x = dC_x - np.mean(dC_x) #remove the mean
 
+	#smooth dC_x in the x direction
+	for i in range(dC_x.shape[0]):
+		for j in range(1, dC_x.shape[1]-1):
+			dC_x[i, j] = (dC_x[i, j-1] + 2*dC_x[i, j] + dC_x[i, j+1])/4.
 
-	for i in range(overlap/2, n_rows - overlap/2 -1):
-		for j in range(overlap/2, n_cols - overlap/2 -1):
+	#calculate covariance matrix (S_x)
+	S_x = np.zeros(frame_a.shape)
+	for i in range(frame_a.shape[0]):
+		for j in range(frame_a.shape[1]):
 
 			S0 = dC_x[i,j]**2
 			for k in range(1,4):
-				if dC_x[i, j]*dC_x[i+k,j+k]/S0 < 0.05:
-					S_x[i,j] = np.sum(dC_x[i, j]*dC_x[i:i+k, j:j+k])
-					break
+				try:
+					if dC_x[i, j]*dC_x[i+k,j+k]/S0 < 0.05:
+						S_x[i,j] = np.sum(dC_x[i, j]*dC_x[i:i+k, j:j+k])
+						break
+					if k == 3 :
+						S_x[i,j] = np.sum(dC_x[i, j]*dC_x[i:i+k, j:j+k])
+				except IndexError:
+					S_x[i,j] = 0.
 
-
-	#get shifted correlation function fields
-	cPlus_x = np.zeros(frame_a.shape)
-	cPlus_x[:, 0:-1] = c_u[:,1:]
-	cMinus_x = np.zeros(frame_a.shape)
-	cMinus_x[:, 1:] = c_u[:,0:-1]
 
 	#smooth and sum the fields
-	c_filt = (L**2) * filt.gaussian_filter(c_u, L)[row_pix, col_pix]
+	C_filt = (L**2) * filt.gaussian_filter(C_u, L)[row_pix, col_pix]
 	cPlus_filt_x = (L**2) * filt.gaussian_filter(cPlus_x, L)[row_pix, col_pix]
 	cMinus_filt_x = (L**2) * filt.gaussian_filter(cMinus_x, L)[row_pix, col_pix]
-	S_filt_x = (L**2) * filt.gaussian_filter(S_x, L)[row_pix, col_pix]
+	S_x_filt = (L**2) * filt.gaussian_filter(S_x, L)[row_pix, col_pix]
 
-	#solve for final uncertainty
-	sig_x = np.sqrt(np.abs(S_filt_x))  #put in abs to avoid runtime warnings
+	sig_x = np.sqrt(S_x_filt)  #put in abs to avoid runtime warnings
 	Ux = np.zeros(x.shape) 
 	cpm_x = (cPlus_filt_x + cMinus_filt_x) / 2. 
 
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
 			Ux[i,j] = ((np.log(np.abs(cpm_x[i,j]+sig_x[i,j]/2.)) - np.log(np.abs(cpm_x[i,j] - sig_x[i,j]/2.))) / 
-		(4*np.log(c_filt[i,j]) - 2*np.log(np.abs(cpm_x[i,j] + sig_x[i,j]/2.)) - 2*np.log(np.abs(cpm_x[i,j] - sig_x[i,j]/2.))))
+		(4*np.log(C_filt[i,j]) - 2*np.log(np.abs(cpm_x[i,j] + sig_x[i,j]/2.)) - 2*np.log(np.abs(cpm_x[i,j] - sig_x[i,j]/2.))))
 
 
 	"""
 	-----------------  y uncertainty -----------------------
 	"""
 
-	#calculate C(u), C+, C-, and S_xy field for y
-	S_y = np.zeros(frame_a.shape)
+	#get delta C_xy for x direction
 	dC_y = np.zeros(frame_a.shape)  #delta C_i in x direction
-	dC_y[0:-dy, 0:-dy] = frame_a[0:-dy, 0:-dy]*frame_b_shift[dy:, 0:-dy] - frame_a[dy:, 0:-dy]*frame_b_shift[0:-dy, 0:-dy]
+	cPlus_y = np.zeros(frame_a.shape)
+	cPlus_y[dy:, :] = frame_a[dy:,:]*frame_b_shift[0:-dy, :]
+	cMinus_y = np.zeros(frame_a.shape)
+	cMinus_y[dy:, :] = frame_a[0:-dy, :]*frame_b_shift[dy:, :]
+	dC_y = cPlus_y - cMinus_y
 	dC_y = dC_y - np.mean(dC_y) #remove the mean
 
-	for i in range(overlap/2, n_rows - overlap/2 -1):
-		for j in range(overlap/2, n_cols - overlap/2 -1):
+	#smooth dC_y in the y direction
+	for i in range(1, dC_y.shape[0]-1):
+		for j in range(dC_y.shape[1]):
+			dC_y[i, j] = (dC_y[i-1, j] + 2*dC_y[i, j] + dC_y[i+1, j])/4.
+
+
+	#calculate covariance matrix
+	S_y = np.zeros(frame_a.shape)
+	for i in range(frame_a.shape[0]):
+		for j in range(frame_a.shape[1]):
 
 			S0 = dC_y[i,j]**2
-			for k in range(1,5):
-				if dC_y[i, j]*dC_y[i+k,j+k]/S0 < 0.05:
-					S_y[i,j] =  np.sum(dC_y[i, j]*dC_y[i:i+k, j:j+k])
-
-
-	#get shifted correlation function fields
-	cPlus_y = np.zeros(frame_a.shape)
-	cPlus_y[0:-1,:] = c_u[1: , :]
- 	cMinus_y = np.zeros(frame_a.shape)
- 	cMinus_y[1:, :] = c_u[0:-1, :] 
+			for k in range(1,4):
+				try:
+					if dC_y[i, j]*dC_y[i+k,j+k]/S0 < 0.05:
+						S_y[i,j] = np.sum(dC_y[i, j]*dC_y[i:i+k, j:j+k])
+						break
+					if (k == 3):
+						S_y[i,j] = np.sum(dC_y[i, j]*dC_y[i:i+k, j:j+k])
+						break
+				except IndexError:
+					S_x[i,j] = 0.
 
 
 	#smooth the fields and sum the fields
@@ -182,30 +182,30 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 	S_filt_y = (L**2) * filt.gaussian_filter(S_y, L)[row_pix, col_pix]
 
 	#calculate standard deviation  of correlation difference
-	sig_y = np.sqrt(np.abs(S_filt_y))
+	sig_y = np.sqrt(S_filt_y)
 	Uy = np.zeros(x.shape) 
 	cpm_y = (cPlus_filt_y + cMinus_filt_y) / 2. 
 
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
-			Uy[i,j] = ((np.log(cpm_y[i,j]+sig_y[i,j]/2.) - np.log(np.abs(cpm_y[i,j] - sig_y[i,j]/2.))) / 
-		(4*np.log(c_filt[i,j]) - 2*np.log(np.abs(cpm_y[i,j] + sig_y[i,j]/2.)) - 2*np.log(np.abs(cpm_y[i,j] - sig_y[i,j]/2.))))
+			Uy[i,j] = ((np.log(cpm_y[i,j]+sig_y[i,j]/2.) - np.log(cpm_y[i,j] - sig_y[i,j]/2.)) / 
+		(4*np.log(C_filt[i,j]) - 2*np.log(cpm_y[i,j] + sig_y[i,j]/2.) - 2*np.log(cpm_y[i,j] - sig_y[i,j]/2.)))
 	
 
-	#propogae uncertainty to the velocity field
-	#Ux = Ux/dt.scaling_factor
-	#Uy = Uy/dt.scaling_factor
+	#Write uncertainty in m/s
+	#Ux = Ux/dt/scaling_factor
+	#Uy = Uy/dt/scaling_factor
 
 	return Ux, Uy
 
 
 
-
-def image_dewarp(frame_b, u,v,dt, scaling_factor):
+def image_dewarp(frame_b,x,y, u,v):
 	"""
 	Dewarp the second image back onto the first using the
-	displacement field and a high order sub-pixel interpolation
+	displacement field and a Gaussian sub-pixel interpolation
 	scheme.
+	Reference: refer to paper 'Analysis of interpolation schemes for image deformation methods in PIV ' 2005
 
 	Inputs:
 		frame_b: 2d array
@@ -213,12 +213,49 @@ def image_dewarp(frame_b, u,v,dt, scaling_factor):
 		u,v: 2d array 
 			u and v velocity calculated by PIV algorithm
 
+	Outputs:
+		frame_b_shift: 2d array
+			2nd frame dewarped back onto the first frame
+
 	"""
 
-	frame_b_shift = np.zeros(frame_b.shape)
+	#Interpolate the dispalcement field onto each pixel 
+	#using a bilinear interploation scheme
 
 
-	return(frame_b_shift)
+	#interpolate u and v 
+	F1 = interp.RectBivariateSpline(y[::-1,0],x[0,:] , u)
+	u_interp = F1(range(frame_b.shape[0]), range(frame_b.shape[1]))
+	F2 = interp.RectBivariateSpline(y[::-1,0],x[0,:] ,v)
+	v_interp = F2(range(frame_b.shape[0]), range(frame_b.shape[1]))
+
+	#define shifted frame
+	frame_shift = np.zeros(frame_b.shape)
+	ul = u_interp.astype('int32') #lower int bound of u displacement
+	vl = v_interp.astype('int32') #lower int bound of v displacement
+	ur = abs(u_interp - ul)  #remainder of u displacement
+	vr = abs(v_interp - vl)	#remainder of v displacement
+	uc = (np.sign(u_interp)*np.ceil(np.abs(u_interp))).astype('int32') #upper int bound of u dispalcement
+	vc = (np.sign(v_interp)*np.ceil(np.abs(v_interp))).astype('int32') #upper int bound of v displacement
+
+	#shift second frame
+	for i in range(frame_b.shape[0]):
+		for j in range(frame_b.shape[1]):
+			try:
+				#get surrounding pixel intensities (fxy)
+				f00 = frame_b[i-vl[i,j], j+ul[i,j]]
+				f01 = frame_b[i-vc[i,j], j+ul[i,j]]	
+				f10 = frame_b[i-vl[i,j], j+uc[i,j]]
+				f11 = frame_b[i-vc[i,j], j+uc[i,j]]
+				#do bilinear interpolation
+				frame_shift[i,j] = ((1-ur[i,j])*(1-vr[i,j])*f00 + ur[i,j]*(1-vr[i,j])*f10 
+									 + (1-ur[i,j])*vr[i,j] + ur[i,j]*vr[i,j]*f11)
+			except IndexError:
+				#index is out of bounds
+				#Use unshifted value
+				frame_shift[i,j] = 0.
+
+	return(frame_shift)
 
 
 
@@ -308,3 +345,70 @@ def image_dewarp(frame_b, u,v,dt, scaling_factor):
 # 	return output
 
 # '''
+
+
+
+# """
+# -------------------------------------------------------------------------------------------------------
+# ALTERNATE  COVARIANCE MATRIX CALCULATION
+
+# This is another way to calculated the covariance matrix Sxy. Each dx and dy term is
+# calcualted as separate fields and then summed together after filtering. 
+# -------------------------------------------------------------------------------------------------------
+# """
+
+# S00_x = dC_x*dC_x
+# S01_x = np.zeros(S00_x.shape)
+# S01_x[1:,:] = dC_x[1:,:]*dC_x[0:-1,:]
+# S02_x = np.zeros(S00_x.shape)
+# S02_x[2:,:] = dC_x[2:,:]*dC_x[0:-2,:]
+# S03_x = np.zeros(S00_x.shape)
+# S03_x[3:,:] = dC_x[3:,:]*dC_x[0:-3,:]
+# S10_x = np.zeros(S00_x.shape)
+# S10_x[:,:-1] = dC_x[:,:-1]*dC_x[:,1:]
+# S11_x = np.zeros(S00_x.shape)
+# S11_x[1:,:-1] = dC_x[1:,:-1]*dC_x[0:-1,1:]
+# S12_x = np.zeros(S00_x.shape)
+# S12_x[2:,:-1] = dC_x[2:,:-1]*dC_x[0:-2,1:]
+# S13_x = np.zeros(S00_x.shape)
+# S13_x[3:,:-1] = dC_x[3:,:-1]*dC_x[0:-3,1:]
+# S20_x = np.zeros(S00_x.shape)
+# S20_x[:,:-2] = dC_x[:,:-2]*dC_x[:,2:]
+# S21_x = np.zeros(S00_x.shape)
+# S21_x[1:,:-2] = dC_x[1:,:-2]*dC_x[0:-1,2:]
+# S22_x = np.zeros(S00_x.shape)
+# S22_x[2:,:-2] = dC_x[2:,:-2]*dC_x[0:-2,2:]
+# S23_x = np.zeros(S00_x.shape)
+# S23_x[3:,:-2] = dC_x[3:,:-2]*dC_x[0:-3,2:]
+# S30_x = np.zeros(S00_x.shape)
+# S30_x[:,:-3] = dC_x[:,:-3]*dC_x[:,3:]
+# S31_x = np.zeros(S00_x.shape)
+# S31_x[1:,:-3] = dC_x[1:,:-3]*dC_x[0:-1,3:]
+# S32_x = np.zeros(S00_x.shape)
+# S32_x[2:,:-3] = dC_x[2:,:-3]*dC_x[0:-2,3:]
+# S33_x = np.zeros(S00_x.shape)
+# S33_x[3:,:-3] = dC_x[3:,:-3]*dC_x[0:-3,3:]
+
+
+# S00_x_filt = filt.gaussian_filter(S00_x, L)[row_pix, col_pix]
+# S01_x_filt = filt.gaussian_filter(S01_x, L)[row_pix, col_pix]
+# S02_x_filt = filt.gaussian_filter(S02_x, L)[row_pix, col_pix]
+# S03_x_filt = filt.gaussian_filter(S03_x, L)[row_pix, col_pix]
+# S10_x_filt = filt.gaussian_filter(S10_x, L)[row_pix, col_pix]
+# S11_x_filt = filt.gaussian_filter(S11_x, L)[row_pix, col_pix]
+# S12_x_filt = filt.gaussian_filter(S12_x, L)[row_pix, col_pix]
+# S13_x_filt = filt.gaussian_filter(S13_x, L)[row_pix, col_pix]
+# S20_x_filt = filt.gaussian_filter(S20_x, L)[row_pix, col_pix]
+# S21_x_filt = filt.gaussian_filter(S21_x, L)[row_pix, col_pix]
+# S22_x_filt = filt.gaussian_filter(S22_x, L)[row_pix, col_pix]
+# S23_x_filt = filt.gaussian_filter(S23_x, L)[row_pix, col_pix]
+# S30_x_filt = filt.gaussian_filter(S30_x, L)[row_pix, col_pix]
+# S31_x_filt = filt.gaussian_filter(S31_x, L)[row_pix, col_pix]
+# S32_x_filt = filt.gaussian_filter(S32_x, L)[row_pix, col_pix]
+# S33_x_filt = filt.gaussian_filter(S33_x, L)[row_pix, col_pix]
+
+# #solve for final uncertainty
+# S = (L**2)*( S00_x_filt + S01_x_filt + S02_x_filt + S03_x_filt  
+# 		   + S10_x_filt + S11_x_filt + S12_x_filt + S13_x_filt
+# 		   + S20_x_filt + S21_x_filt + S22_x_filt + S23_x_filt   
+# 		   + S30_x_filt + S31_x_filt + S32_x_filt + S33_x_filt)
