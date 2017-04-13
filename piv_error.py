@@ -79,13 +79,13 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 	col_pix = x.astype('int32')
 
 	#Dewarp frame_b
-	frame_b_shift = image_dewarp(frame_b, x,y,u,v)
+	frame_b_shift = image_dewarp(frame_b, x,y,u,v, dt)
 
 	"""
 	-----------------  x uncertainty -----------------------
 
 	Get C and Sxy values for each pixel then filter and smooth them, which is
-	equivalent to doing the sms over the interrogation window.
+	equivalent to doing the sums over the interrogation window.
 	"""
 
 
@@ -111,14 +111,14 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 	for i in range(frame_a.shape[0]):
 		for j in range(frame_a.shape[1]):
 
-			S0 = dC_x[i,j]**2
-			for k in range(1,4):
+			S0 = dC_x[i,j]
+			for k in range(1,5):
 				try:
-					if dC_x[i, j]*dC_x[i+k,j+k]/S0 < 0.05:
-						S_x[i,j] = np.sum(dC_x[i, j]*dC_x[i:i+k, j:j+k])
+					if dC_x[i+k,j+k]/S0 < 0.05:
+						S_x[i,j] = np.sum(S0*dC_x[i:i+k, j:j+k])
 						break
-					if k == 3 :
-						S_x[i,j] = np.sum(dC_x[i, j]*dC_x[i:i+k, j:j+k])
+					if k == 4 :
+						S_x[i,j] = np.sum(S0*dC_x[i:i+k, j:j+k])
 				except IndexError:
 					S_x[i,j] = 0.
 
@@ -129,21 +129,19 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 	cMinus_filt_x = (L**2) * filt.gaussian_filter(cMinus_x, L)[row_pix, col_pix]
 	S_x_filt = (L**2) * filt.gaussian_filter(S_x, L)[row_pix, col_pix]
 
-	sig_x = np.sqrt(S_x_filt)  #put in abs to avoid runtime warnings
-	Ux = np.zeros(x.shape) 
+	sig_x = np.sqrt(S_x_filt)  
 	cpm_x = (cPlus_filt_x + cMinus_filt_x) / 2. 
 
-	for i in range(x.shape[0]):
-		for j in range(x.shape[1]):
-			Ux[i,j] = ((np.log(np.abs(cpm_x[i,j]+sig_x[i,j]/2.)) - np.log(np.abs(cpm_x[i,j] - sig_x[i,j]/2.))) / 
-		(4*np.log(C_filt[i,j]) - 2*np.log(np.abs(cpm_x[i,j] + sig_x[i,j]/2.)) - 2*np.log(np.abs(cpm_x[i,j] - sig_x[i,j]/2.))))
+	#final x uncertainty
+	Ux = ((np.log(cpm_x+sig_x/2.) - np.log(cpm_x - sig_x/2.)) / 
+		(4*np.log(C_filt) - 2*np.log(cpm_x + sig_x/2.) - 2*np.log(cpm_x - sig_x/2.)))
 
 
 	"""
 	-----------------  y uncertainty -----------------------
 	"""
 
-	#get delta C_xy for x direction
+	#get delta C_xy for y direction
 	dC_y = np.zeros(frame_a.shape)  #delta C_i in x direction
 	cPlus_y = np.zeros(frame_a.shape)
 	cPlus_y[dy:, :] = frame_a[dy:,:]*frame_b_shift[0:-dy, :]
@@ -163,47 +161,46 @@ def correlation_stats(frame_a, frame_b, x, y, u, v, dt, L, overlap, scaling_fact
 	for i in range(frame_a.shape[0]):
 		for j in range(frame_a.shape[1]):
 
-			S0 = dC_y[i,j]**2
+			S0 = dC_y[i,j]
 			for k in range(1,4):
 				try:
-					if dC_y[i, j]*dC_y[i+k,j+k]/S0 < 0.05:
-						S_y[i,j] = np.sum(dC_y[i, j]*dC_y[i:i+k, j:j+k])
+					if dC_y[i+k,j+k]/S0 < 0.05:
+						S_y[i,j] = np.sum(S0*dC_y[i:i+k, j:j+k])
 						break
 					if (k == 3):
-						S_y[i,j] = np.sum(dC_y[i, j]*dC_y[i:i+k, j:j+k])
+						S_y[i,j] = np.sum(S0*dC_y[i:i+k, j:j+k])
 						break
 				except IndexError:
 					S_x[i,j] = 0.
 
 
-	#smooth the fields and sum the fields
+	#smooth and sum the fields
 	cPlus_filt_y = (L**2) * filt.gaussian_filter(cPlus_y, L)[row_pix, col_pix]
 	cMinus_filt_y = (L**2) * filt.gaussian_filter(cMinus_y, L)[row_pix, col_pix]
 	S_filt_y = (L**2) * filt.gaussian_filter(S_y, L)[row_pix, col_pix]
 
 	#calculate standard deviation  of correlation difference
-	sig_y = np.sqrt(S_filt_y)
-	Uy = np.zeros(x.shape) 
+	sig_y = np.sqrt(S_filt_y) 
 	cpm_y = (cPlus_filt_y + cMinus_filt_y) / 2. 
 
-	for i in range(x.shape[0]):
-		for j in range(x.shape[1]):
-			Uy[i,j] = ((np.log(cpm_y[i,j]+sig_y[i,j]/2.) - np.log(cpm_y[i,j] - sig_y[i,j]/2.)) / 
-		(4*np.log(C_filt[i,j]) - 2*np.log(cpm_y[i,j] + sig_y[i,j]/2.) - 2*np.log(cpm_y[i,j] - sig_y[i,j]/2.)))
+	#final y uncertainty
+	Uy = ((np.log(cpm_y+sig_y/2.) - np.log(cpm_y - sig_y/2.)) / 
+		(4*np.log(C_filt) - 2*np.log(cpm_y + sig_y/2.) - 2*np.log(cpm_y - sig_y/2.)))
 	
 
 	#Write uncertainty in m/s
-	#Ux = Ux/dt/scaling_factor
-	#Uy = Uy/dt/scaling_factor
+	Ux = Ux/dt/scaling_factor
+	Uy = Uy/dt/scaling_factor
 
 	return Ux, Uy
 
 
 
-def image_dewarp(frame_b,x,y, u,v):
+def image_dewarp(frame_b,x,y, u,v, dt, method = 'bilinear'):
+
 	"""
 	Dewarp the second image back onto the first using the
-	displacement field and a Gaussian sub-pixel interpolation
+	displacement field and a bilinear sub-pixel interpolation
 	scheme.
 	Reference: refer to paper 'Analysis of interpolation schemes for image deformation methods in PIV ' 2005
 
@@ -212,6 +209,8 @@ def image_dewarp(frame_b,x,y, u,v):
 			second image of the PIV image pair
 		u,v: 2d array 
 			u and v velocity calculated by PIV algorithm
+		method: string
+			type of subpixel image dewarping function. 
 
 	Outputs:
 		frame_b_shift: 2d array
@@ -222,42 +221,61 @@ def image_dewarp(frame_b,x,y, u,v):
 	#Interpolate the dispalcement field onto each pixel 
 	#using a bilinear interploation scheme
 
-
 	#interpolate u and v 
-	F1 = interp.RectBivariateSpline(y[::-1,0],x[0,:] , u)
-	u_interp = F1(range(frame_b.shape[0]), range(frame_b.shape[1]))
-	F2 = interp.RectBivariateSpline(y[::-1,0],x[0,:] ,v)
-	v_interp = F2(range(frame_b.shape[0]), range(frame_b.shape[1]))
+	F1 = interp.RectBivariateSpline(y[::-1,0],x[0,:] , u, kx=1, ky=1)
+	u_interp = F1(range(frame_b.shape[0]), range(frame_b.shape[1]))*dt 
+	F2 = interp.RectBivariateSpline(y[::-1,0],x[0,:] ,v, kx=1, ky=1)
+	v_interp = F2(range(frame_b.shape[0]), range(frame_b.shape[1]))*dt
+
 
 	#define shifted frame
 	frame_shift = np.zeros(frame_b.shape)
+	#get displacement values
 	ul = u_interp.astype('int32') #lower int bound of u displacement
 	vl = v_interp.astype('int32') #lower int bound of v displacement
-	ur = abs(u_interp - ul)  #remainder of u displacement
-	vr = abs(v_interp - vl)	#remainder of v displacement
-	uc = (np.sign(u_interp)*np.ceil(np.abs(u_interp))).astype('int32') #upper int bound of u dispalcement
-	vc = (np.sign(v_interp)*np.ceil(np.abs(v_interp))).astype('int32') #upper int bound of v displacement
+	ur = u_interp - ul  #remainder of u displacement
+	vr = v_interp - vl	#remainder of v displacement
 
-	#shift second frame
-	for i in range(frame_b.shape[0]):
-		for j in range(frame_b.shape[1]):
-			try:
-				#get surrounding pixel intensities (fxy)
-				f00 = frame_b[i-vl[i,j], j+ul[i,j]]
-				f01 = frame_b[i-vc[i,j], j+ul[i,j]]	
-				f10 = frame_b[i-vl[i,j], j+uc[i,j]]
-				f11 = frame_b[i-vc[i,j], j+uc[i,j]]
-				#do bilinear interpolation
-				frame_shift[i,j] = ((1-ur[i,j])*(1-vr[i,j])*f00 + ur[i,j]*(1-vr[i,j])*f10 
-									 + (1-ur[i,j])*vr[i,j] + ur[i,j]*vr[i,j]*f11)
-			except IndexError:
-				#index is out of bounds
-				#Use unshifted value
-				frame_shift[i,j] = 0.
+	#dewarp the image	
+	if method == 'bilinear':
 
-	return(frame_shift)
+		#upper int bound of u and v displacement
+		uc = (np.sign(u_interp)*np.ceil(np.abs(u_interp))).astype('int32')
+		vc = (np.sign(v_interp)*np.ceil(np.abs(v_interp))).astype('int32') 
+
+		ur = abs(ur)
+		vr = abs(vr)
+
+		#shift second frame
+		for i in range(frame_b.shape[0]):
+			for j in range(frame_b.shape[1]):
+				try:
+					ur_tmp = ur[i,j]
+					vr_tmp = vr[i,j]
+
+					#get surrounding pixel intensities (fxy)
+					f00 = frame_b[i-vl[i,j], j+ul[i,j]]
+					f01 = frame_b[i-vc[i,j], j+ul[i,j]]	
+					f10 = frame_b[i-vl[i,j], j+uc[i,j]]
+					f11 = frame_b[i-vc[i,j], j+uc[i,j]]
+					#do bilinear interpolation
+					frame_shift[i,j] = ((1-ur_tmp)*(1-vr_tmp)*f00 + ur_tmp*(1-vr_tmp)*f10 
+										 + (1-ur_tmp)*vr_tmp*f01 + ur_tmp*vr_tmp*f11)
+				except IndexError:
+					#index is out of bounds
+					#Set frame to zero
+					frame_shift[i,j] = 0.
+
+		return(frame_shift)
+
+	else:
+		#in the future, should add a gaussian method here
+		raise ValueError('Image dewarping method not supported. Use Bilinear')
 
 
+		
+
+ 
 
 
 #
